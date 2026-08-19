@@ -1,0 +1,338 @@
+version: "1.1.0"
+last_updated: "2026-03-01"
+
+services:
+  elb:
+    name: "Elastic Load Balancing"
+    resource_types:
+      - alb_listener
+      - nlb_listener
+    pqc_support: native
+    description: "ALB and NLB support PQC TLS policies with hybrid key exchange."
+    current_vulnerable_policies:
+      - "ELBSecurityPolicy-2016-08"
+      - "ELBSecurityPolicy-TLS-1-2-2017-01"
+      - "ELBSecurityPolicy-TLS-1-2-Ext-2018-06"
+      - "ELBSecurityPolicy-FS-2018-06"
+      - "ELBSecurityPolicy-TLS13-1-2-2021-06"
+      - "ELBSecurityPolicy-TLS13-1-2-Res-2021-06"
+      - "ELBSecurityPolicy-TLS13-1-3-2021-06"
+    recommended_policy: "ELBSecurityPolicy-TLS13-1-2-Res-PQ-2025-09"
+    alternative_policies:
+      - "ELBSecurityPolicy-TLS13-1-2-PQ-2025-09"
+    crypto_change:
+      before:
+        key_exchange: "ECDHE (X25519 or P-256)"
+        key_exchange_size: 32
+        authentication: "RSA-2048 or ECDSA P-256"
+        tls_version: "TLS 1.2 or 1.3"
+      after:
+        key_exchange: "X25519MLKEM768 (hybrid ECDHE + ML-KEM-768)"
+        key_exchange_size: 1184
+        authentication: "RSA-2048 or ECDSA P-256 (unchanged)"
+        tls_version: "TLS 1.3 required"
+        handshake_overhead_bytes: 1600
+        latency_overhead_us: "80-150"
+    impact:
+      breaking_changes: "Clients must support TLS 1.3 with ML-KEM hybrid key exchange. Older clients (pre-2024 OpenSSL, Java 8) will fail."
+      performance: "+1600 bytes TLS handshake, +80-150us latency per new connection."
+    migration_effort:
+      scope: "All HTTPS/TLS listeners on this load balancer."
+      affected_resources: "Every client connecting through this listener."
+      estimated_duration: "Seconds (policy change is instant, no data migration)."
+      method: "Update ssl_policy attribute on each listener. No data re-encryption needed."
+      rollback_risk: "Low — revert to previous policy instantly if clients break."
+      client_requirements: "OpenSSL 3.2+, Java 21+, curl 8.9+, Chrome 124+, Firefox 124+, Safari 17.4+, AWS SDK 2024+."
+    references:
+      - "https://docs.aws.amazon.com/elasticloadbalancing/latest/application/describe-ssl-policies.html"
+
+  kms:
+    name: "AWS Key Management Service"
+    resource_types:
+      - kms_key
+    pqc_support: partial
+    description: "Symmetric AES-256 keys are quantum-safe. Asymmetric RSA and ECC keys are vulnerable."
+    vulnerable_key_specs:
+      - "RSA_2048"
+      - "RSA_3072"
+      - "RSA_4096"
+      - "ECC_NIST_P256"
+      - "ECC_NIST_P384"
+      - "ECC_NIST_P521"
+      - "ECC_SECG_P256K1"
+    safe_key_specs:
+      - "SYMMETRIC_DEFAULT"
+    recommended_action: "Migrate asymmetric workloads to symmetric AES-256 where possible. For signing, evaluate ML-DSA when KMS supports it."
+    crypto_change:
+      before:
+        algorithm: "RSA-2048/3072/4096 or ECC P-256/P-384/P-521"
+        key_size_bits: "2048-4096 (RSA) or 256-521 (ECC)"
+        quantum_safe: false
+      after:
+        algorithm: "AES-256 (SYMMETRIC_DEFAULT)"
+        key_size_bits: "256"
+        quantum_safe: true
+        note: "ML-KEM/ML-DSA key types not yet available in KMS. Use AES-256 as interim."
+    impact:
+      breaking_changes: "Changing key type requires re-encrypting all data and updating all consumers."
+      performance: "Symmetric operations are faster than current asymmetric operations."
+    migration_effort:
+      scope: "All data encrypted or signed with this KMS key must be re-encrypted or re-signed."
+      affected_resources: "S3 objects, EBS volumes, RDS snapshots, Secrets Manager secrets, DynamoDB tables, and any application using this key for encrypt/decrypt/sign/verify."
+      estimated_duration: "Depends on data volume. Approximately 1-10 GB/min for S3 re-encryption using S3 Batch Operations. EBS snapshots require volume copy."
+      method: "1) Create new SYMMETRIC_DEFAULT key. 2) Update key policies. 3) Re-encrypt data using 'aws kms re-encrypt' or service-specific bulk operations. 4) Update all application references. 5) Schedule old key for deletion after verification."
+      rollback_risk: "Medium — old key must remain enabled during migration. Cannot delete old key until all data is re-encrypted and verified."
+      client_requirements: "All AWS SDKs support AES-256. No client-side changes needed for symmetric encryption."
+    references:
+      - "https://docs.aws.amazon.com/kms/latest/developerguide/symm-asymm-concepts.html"
+
+  cloudfront:
+    name: "Amazon CloudFront"
+    resource_types:
+      - distribution
+    pqc_support: native
+    description: "CloudFront supports PQC via TLSv1.3 viewer policies."
+    vulnerable_policies:
+      - "TLSv1"
+      - "TLSv1_2016"
+      - "TLSv1.1_2016"
+      - "TLSv1.2_2018"
+      - "TLSv1.2_2019"
+      - "TLSv1.2_2021"
+    recommended_policy: "TLSv1.2_2021"
+    recommended_notes: "CloudFront automatically negotiates PQC with capable clients when using TLS 1.3. Ensure minimum protocol allows TLS 1.3."
+    crypto_change:
+      before:
+        key_exchange: "ECDHE (classical)"
+        tls_version: "TLS 1.0-1.2"
+      after:
+        key_exchange: "X25519MLKEM768 (hybrid, auto-negotiated)"
+        tls_version: "TLS 1.3 (with 1.2 fallback)"
+        handshake_overhead_bytes: 1600
+        note: "PQC is negotiated automatically when viewer supports it. No forced migration."
+    impact:
+      breaking_changes: "Older browsers may not support TLS 1.3 PQC key exchange."
+      performance: "Minimal impact — CloudFront edge handles handshake overhead."
+    migration_effort:
+      scope: "Viewer-facing TLS policy for this distribution."
+      affected_resources: "All viewers/browsers connecting to this CloudFront distribution."
+      estimated_duration: "Minutes (distribution update propagation takes 5-15 minutes)."
+      method: "Update minimum protocol version. PQC negotiation is automatic for capable clients."
+      rollback_risk: "Low — revert minimum protocol version if needed. PQC is opportunistic, not forced."
+      client_requirements: "Chrome 124+, Firefox 124+, Safari 17.4+, Edge 124+. Older browsers fall back to classical TLS."
+    references:
+      - "https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/secure-connections-supported-viewer-protocols-ciphers.html"
+
+  s3:
+    name: "Amazon S3"
+    resource_types:
+      - bucket
+    pqc_support: native
+    description: "S3 supports PQC TLS for data in transit. SSE-KMS encryption at rest depends on KMS key type."
+    checks:
+      - "Bucket encryption configuration (SSE-S3 is quantum-safe, SSE-KMS depends on key)"
+      - "Bucket policy TLS enforcement"
+      - "S3 endpoint TLS version"
+    recommended_action: "Ensure SSE-S3 or SSE-KMS with symmetric key. Update bucket policies to enforce TLS 1.2+."
+    crypto_change:
+      before:
+        encryption: "SSE-KMS with potentially asymmetric CMK"
+        transit: "TLS 1.0+ (depends on bucket policy)"
+      after:
+        encryption: "SSE-KMS with SYMMETRIC_DEFAULT key or SSE-S3 (AES-256)"
+        transit: "TLS 1.2+ with PQC key exchange"
+    impact:
+      breaking_changes: "Enforcing TLS 1.2+ in bucket policy may break legacy SDK versions."
+      performance: "No significant impact."
+    migration_effort:
+      scope: "Bucket encryption configuration and objects encrypted with this key."
+      affected_resources: "All objects in the bucket if re-encryption is needed. All clients if TLS policy is tightened."
+      estimated_duration: "For re-encryption: 1-10 GB/min using S3 Batch Operations. For policy change: instant."
+      method: "1) Verify KMS key type. 2) If asymmetric, create new symmetric key. 3) Use S3 Batch Operations to copy objects (re-encrypts with new key). 4) Update bucket policy for TLS 1.2+."
+      rollback_risk: "Low for policy changes. Medium for re-encryption (old objects remain readable with old key)."
+      client_requirements: "AWS SDK 2019+ for TLS 1.2. All current SDKs support this."
+
+  rds:
+    name: "Amazon RDS"
+    resource_types:
+      - db_instance
+      - db_cluster
+    pqc_support: partial
+    description: "RDS supports TLS for connections. Storage encryption uses AES-256 (quantum-safe). Certificate authority migration may be needed."
+    vulnerable_configurations:
+      - "rds-ca-2019 (RSA-2048 CA certificate)"
+      - "TLS connections using RSA key exchange"
+    recommended_action: "Migrate to rds-ca-rsa4096-g1 or rds-ca-ecc384-g1 CA. Monitor for PQC CA availability."
+    crypto_change:
+      before:
+        ca_certificate: "rds-ca-2019 (RSA-2048)"
+        key_size_bits: 2048
+        signature: "SHA256withRSA"
+      after:
+        ca_certificate: "rds-ca-rsa4096-g1 (RSA-4096) or rds-ca-ecc384-g1 (ECDSA P-384)"
+        key_size_bits: "4096 (RSA) or 384 (ECC)"
+        signature: "SHA384withRSA or SHA384withECDSA"
+        note: "Still classical crypto but stronger. PQC CAs (ML-DSA) not yet available."
+    impact:
+      breaking_changes: "CA certificate rotation requires client trust store update and potential application restart."
+      performance: "Minimal impact on connection establishment."
+    migration_effort:
+      scope: "TLS certificate authority for this RDS instance/cluster."
+      affected_resources: "All applications and services connecting to this database instance."
+      estimated_duration: "5-30 minutes per instance (modify + apply, may require restart depending on engine)."
+      method: "1) Download new CA bundle. 2) Update client trust stores. 3) Modify DB instance CA identifier. 4) Apply changes (may require maintenance window). 5) Verify all clients connect successfully."
+      rollback_risk: "Medium — if clients are not updated first, connections will fail. Test in staging before production."
+      client_requirements: "Application must have updated CA trust store with the new CA certificate bundle."
+
+  transfer_family:
+    name: "AWS Transfer Family"
+    resource_types:
+      - server
+    pqc_support: native
+    description: "Transfer Family supports PQC security policies for SFTP/FTPS/FTP."
+    vulnerable_policies:
+      - "TransferSecurityPolicy-2018-11"
+      - "TransferSecurityPolicy-2020-06"
+      - "TransferSecurityPolicy-2022-03"
+      - "TransferSecurityPolicy-2023-05"
+      - "TransferSecurityPolicy-2024-01"
+    recommended_policy: "TransferSecurityPolicy-PQ-SSH-Experimental-2023-04"
+    recommended_notes: "Experimental PQC policy available. Monitor for GA PQC policies."
+    crypto_change:
+      before:
+        key_exchange: "ECDH (classical)"
+        host_key: "RSA-2048 or ED25519"
+      after:
+        key_exchange: "PQ-hybrid SSH key exchange"
+        host_key: "RSA-2048 or ED25519 (unchanged)"
+        note: "Experimental. Key exchange is PQ-hybrid, host key remains classical."
+    impact:
+      breaking_changes: "SFTP clients must support PQC key exchange algorithms."
+      performance: "Slightly larger key exchange messages."
+    migration_effort:
+      scope: "Security policy for this Transfer Family server."
+      affected_resources: "All SFTP/FTPS clients connecting to this server."
+      estimated_duration: "Seconds (policy change is instant)."
+      method: "Update security_policy_name on the Transfer server. No data migration."
+      rollback_risk: "Low — revert policy if SFTP clients are incompatible."
+      client_requirements: "OpenSSH 9.0+ for PQ key exchange support."
+
+  acm:
+    name: "AWS Certificate Manager"
+    resource_types:
+      - certificate
+      - private_ca
+    pqc_support: partial
+    description: "ACM certificates use RSA or ECDSA. PQC certificates (ML-DSA) are not yet available. Private CA signing algorithms are RSA/ECDSA."
+    vulnerable_key_algorithms:
+      - "RSA_1024"
+      - "RSA_2048"
+      - "RSA_3072"
+      - "RSA_4096"
+      - "EC_prime256v1"
+      - "EC_secp384r1"
+      - "EC_secp521r1"
+    recommended_action: "Use ECDSA P-384 for current best practice. Monitor for ML-DSA certificate support."
+    crypto_change:
+      before:
+        algorithm: "RSA-1024/2048/3072/4096 or ECDSA P-256/P-384/P-521"
+        key_size_bits: "1024-4096 (RSA) or 256-521 (ECC)"
+        quantum_safe: false
+      after:
+        algorithm: "ECDSA P-384 (interim, still quantum-vulnerable but stronger)"
+        key_size_bits: "384"
+        quantum_safe: false
+        note: "True PQC (ML-DSA) certificates not yet available in ACM. ECDSA P-384 is interim best practice."
+    impact:
+      breaking_changes: "Switching key algorithm requires certificate reissuance. Some older clients may not support ECDSA."
+      performance: "ECDSA is faster than RSA for TLS handshakes."
+    migration_effort:
+      scope: "This certificate and all services using it."
+      affected_resources: "All services (ELB, CloudFront, API Gateway) using this certificate."
+      estimated_duration: "Minutes for certificate reissuance. ACM auto-renews managed certificates."
+      method: "1) Request new certificate with ECDSA P-384 key algorithm. 2) Validate domain ownership. 3) Associate new certificate with services. 4) Remove old certificate after verification."
+      rollback_risk: "Low — old certificate remains valid until expiry. Can switch back if needed."
+      client_requirements: "All modern browsers and SDKs support ECDSA. Legacy Java 6 and Windows XP do not."
+
+  secrets_manager:
+    name: "AWS Secrets Manager"
+    resource_types:
+      - secret
+    pqc_support: partial
+    description: "Secrets Manager encrypts secrets with KMS. PQC readiness depends on the KMS key used."
+    recommended_action: "Ensure secrets use aws/secretsmanager (AES-256 symmetric) or a customer-managed symmetric KMS key."
+    crypto_change:
+      before:
+        encryption: "SSE-KMS with custom (potentially asymmetric) CMK"
+      after:
+        encryption: "SSE-KMS with AES-256 symmetric key (aws/secretsmanager default or custom symmetric)"
+        quantum_safe: true
+    impact:
+      breaking_changes: "None if using default encryption."
+      performance: "No impact."
+    migration_effort:
+      scope: "Encryption key for this secret."
+      affected_resources: "Applications reading this secret (must have access to new KMS key)."
+      estimated_duration: "Seconds per secret (update KMS key association)."
+      method: "1) Create/identify symmetric KMS key. 2) Update secret's KMS key with 'aws secretsmanager update-secret --kms-key-id'. Secret is re-encrypted automatically."
+      rollback_risk: "Low — secret value is unchanged, only encryption key changes."
+      client_requirements: "Applications must have IAM permission to the new KMS key."
+
+  api_gateway:
+    name: "Amazon API Gateway"
+    resource_types:
+      - rest_api
+      - http_api
+    pqc_support: partial
+    description: "API Gateway custom domains support TLS security policies."
+    vulnerable_policies:
+      - "TLS_1_0"
+      - "TLS_1_2"
+    recommended_policy: "TLS_1_2"
+    recommended_notes: "Monitor for PQC-specific security policies. API Gateway edge-optimized endpoints use CloudFront TLS."
+    crypto_change:
+      before:
+        tls_version: "TLS 1.0"
+        key_exchange: "Classical ECDHE/RSA"
+      after:
+        tls_version: "TLS 1.2+"
+        key_exchange: "Classical ECDHE (PQC via CloudFront for edge-optimized endpoints)"
+        note: "Direct PQC security policies not yet available. Edge-optimized endpoints inherit CloudFront PQC."
+    impact:
+      breaking_changes: "Clients must support TLS 1.2+."
+      performance: "Minimal impact."
+    migration_effort:
+      scope: "TLS security policy for this custom domain."
+      affected_resources: "All API consumers connecting via this custom domain."
+      estimated_duration: "Seconds (policy change is instant)."
+      method: "Update security policy on the custom domain name resource."
+      rollback_risk: "Low — revert to previous policy if needed."
+      client_requirements: "Any TLS 1.2-capable client (all modern software since ~2014)."
+
+  vpn:
+    name: "AWS Site-to-Site VPN"
+    resource_types:
+      - vpn_connection
+    pqc_support: none
+    description: "VPN uses IKEv2 with RSA/ECDSA authentication and DH key exchange. No PQC support yet."
+    recommended_action: "Flag all VPN connections. Use strongest available DH groups (DH group 20/21). Monitor for PQC IKE support."
+    crypto_change:
+      before:
+        key_exchange: "IKEv2 with DH groups 2/14/15/16/17/18/19/20/21"
+        authentication: "RSA or ECDSA pre-shared key / certificate"
+        quantum_safe: false
+      after:
+        key_exchange: "No PQC IKE support available yet"
+        authentication: "No change possible"
+        quantum_safe: false
+        note: "No migration path currently exists. Use DH group 20 (384-bit ECDH) or 21 (521-bit ECDH) as interim strongest option."
+    impact:
+      breaking_changes: "No PQC migration path currently available."
+      performance: "N/A"
+    migration_effort:
+      scope: "No PQC migration possible at this time."
+      affected_resources: "All traffic traversing this VPN tunnel is at risk of harvest-now-decrypt-later attacks."
+      estimated_duration: "N/A — awaiting AWS PQC VPN support."
+      method: "1) Use DH group 20 or 21 for strongest classical security. 2) Consider AWS Direct Connect for sensitive traffic. 3) Monitor AWS announcements for PQC IKE support."
+      rollback_risk: "N/A"
+      client_requirements: "Customer gateway device must support the selected DH group."

@@ -1,0 +1,116 @@
+version: "1.0.0"
+last_updated: "2025-12-01"
+
+algorithms:
+  # Post-Quantum Key Encapsulation Mechanisms (FIPS 203)
+  ML-KEM-768:
+    type: kem
+    standard: "FIPS 203"
+    security_level: 3
+    quantum_safe: true
+    public_key_size: 1184
+    ciphertext_size: 1088
+    shared_secret_size: 32
+    description: "Module-Lattice-based Key Encapsulation Mechanism. NIST security level 3 (equivalent to AES-192)."
+    aws_services: ["elb", "cloudfront", "s3"]
+    notes: "Used in hybrid mode with ECDHE (X25519MLKEM768) in TLS 1.3."
+
+  ML-KEM-1024:
+    type: kem
+    standard: "FIPS 203"
+    security_level: 5
+    quantum_safe: true
+    public_key_size: 1568
+    ciphertext_size: 1568
+    shared_secret_size: 32
+    description: "ML-KEM at NIST security level 5 (equivalent to AES-256)."
+    aws_services: []
+    notes: "Higher security level, larger key sizes. Not yet widely deployed in AWS."
+
+  # Post-Quantum Digital Signatures (FIPS 204)
+  ML-DSA-65:
+    type: signature
+    standard: "FIPS 204"
+    security_level: 3
+    quantum_safe: true
+    public_key_size: 1952
+    signature_size: 3309
+    description: "Module-Lattice-based Digital Signature Algorithm. NIST security level 3."
+    aws_services: []
+    notes: "Not yet available in ACM or KMS. Monitor for future support."
+
+  ML-DSA-87:
+    type: signature
+    standard: "FIPS 204"
+    security_level: 5
+    quantum_safe: true
+    public_key_size: 2592
+    signature_size: 4627
+    description: "ML-DSA at NIST security level 5."
+    aws_services: []
+    notes: "Highest security level. Not yet available in AWS services."
+
+  # Hash-based Signatures (FIPS 205)
+  SLH-DSA-128s:
+    type: signature
+    standard: "FIPS 205"
+    security_level: 1
+    quantum_safe: true
+    public_key_size: 32
+    signature_size: 7856
+    description: "Stateless Hash-based Digital Signature Algorithm. Small keys but larger signatures."
+    aws_services: []
+    notes: "Conservative choice for long-lived signing keys."
+
+  # Classical algorithms (vulnerable)
+  RSA-2048:
+    type: signature_and_encryption
+    standard: "PKCS#1"
+    security_level: 1
+    quantum_safe: false
+    description: "Vulnerable to Shor's algorithm on a sufficiently large quantum computer."
+    estimated_quantum_break: "2030-2040"
+    notes: "Most widely used. Migrate to PQC or at minimum RSA-4096 as interim."
+
+  RSA-4096:
+    type: signature_and_encryption
+    standard: "PKCS#1"
+    security_level: 2
+    quantum_safe: false
+    description: "Larger RSA key. Still vulnerable to quantum attack, but buys time."
+    estimated_quantum_break: "2035-2045"
+    notes: "Interim measure only. Not a substitute for PQC migration."
+
+  ECDSA-P256:
+    type: signature
+    standard: "FIPS 186-5"
+    security_level: 1
+    quantum_safe: false
+    description: "Elliptic Curve Digital Signature Algorithm. Vulnerable to quantum attack."
+    estimated_quantum_break: "2030-2040"
+    notes: "Efficient but quantum-vulnerable. Used in ACM certificates."
+
+  ECDSA-P384:
+    type: signature
+    standard: "FIPS 186-5"
+    security_level: 2
+    quantum_safe: false
+    description: "P-384 curve. Vulnerable to quantum attack."
+    estimated_quantum_break: "2035-2045"
+    notes: "Current best practice for classical signatures."
+
+  AES-256:
+    type: symmetric
+    standard: "FIPS 197"
+    security_level: 5
+    quantum_safe: true
+    description: "AES-256 provides 128-bit security against Grover's algorithm. Considered quantum-safe."
+    notes: "Used by KMS SYMMETRIC_DEFAULT, S3 SSE-S3, EBS encryption."
+
+  ECDHE-X25519:
+    type: key_exchange
+    standard: "RFC 7748"
+    security_level: 1
+    quantum_safe: false
+    description: "Elliptic Curve Diffie-Hellman key exchange. Vulnerable to quantum attack."
+    notes: "Used in TLS 1.3. Being replaced by hybrid X25519+ML-KEM-768."
